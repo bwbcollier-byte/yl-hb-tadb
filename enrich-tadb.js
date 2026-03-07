@@ -1,5 +1,5 @@
 /**
- * enrich-tadb.js
+ * enrich-tadb.js (Fixed)
  * Pulls MusicBrainz IDs from Supabase and enriches talent using AudioDB.
  */
 require('dotenv').config();
@@ -22,12 +22,20 @@ const TADB_SOCIAL_MAP = {
     'strIntLastFM': 'Last.fm',
 };
 
+/**
+ * Extracts the UUID from a MusicBrainz URL or returns it if already an ID.
+ */
+function sanitizeMBID(mbid) {
+    if (!mbid) return null;
+    // Match UUID pattern (8-4-4-4-12 hex chars)
+    const uuidMatch = mbid.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+    return uuidMatch ? uuidMatch[0] : null;
+}
+
 async function fetchMBIDS() {
     console.log('🔍 Fetching MusicBrainz profiles from Supabase...');
     
-    // For large runs, we limit/batch, but here we prioritize those not yet checked by TADB
-    // We can use ml_check column to track TADB status if it exists, or check absence of 'AudioDB' social entry.
-    // For now, let's just get 500 records where social_type is MusicBrainz
+    // Attempt to find MusicBrainz profiles where we haven't successfully pulled AudioDB info yet
     const { data, error } = await supabase
         .from('social_profiles')
         .select(`
@@ -41,7 +49,7 @@ async function fetchMBIDS() {
         `)
         .eq('social_type', 'MusicBrainz')
         .not('social_id', 'is', null)
-        .limit(500);
+        .limit(100); // Process in smaller batches
 
     if (error) {
         console.error('❌ Error fetching MBIDs:', error.message);
@@ -50,8 +58,12 @@ async function fetchMBIDS() {
     return data;
 }
 
-async function enrichArtist(mbid, talentId, artistName) {
-    if (!mbid) return;
+async function enrichArtist(mbidRaw, talentId, artistName) {
+    const mbid = sanitizeMBID(mbidRaw);
+    if (!mbid) {
+        console.log(`      ⚠️  Invalid MBID format: ${mbidRaw}`);
+        return;
+    }
     
     const url = `${BASE_URL}/artist-mb.php?i=${mbid}`;
     console.log(`   📡 Calling AudioDB for ${artistName} (MBID: ${mbid})...`);
@@ -82,21 +94,24 @@ async function enrichArtist(mbid, talentId, artistName) {
         // 2. Extract and update other socials found in AudioDB
         for (const [tadbKey, hbType] of Object.entries(TADB_SOCIAL_MAP)) {
             const link = artist[tadbKey];
-            if (link && link.trim() !== '') {
+            if (link && link.trim() !== '' && link !== '0' && link !== '1') {
                 // AudioDB sometimes has just the handle or full URL
-                // We'll normalize if we can or just store as URL
+                let fullUrl = link;
+                if (!link.startsWith('http')) {
+                    if (hbType === 'Facebook') fullUrl = `https://www.facebook.com/${link}`;
+                    else if (hbType === 'Twitter') fullUrl = `https://twitter.com/${link}`;
+                    else if (hbType === 'Instagram') fullUrl = `https://www.instagram.com/${link}`;
+                    else if (hbType === 'Website') fullUrl = `https://${link}`;
+                }
+
                 await upsertSocial({
                     talent_id: talentId,
                     social_type: hbType,
-                    social_url: link.startsWith('http') ? link : `https://${link}`,
+                    social_url: fullUrl,
                     status: 'enriched_from_tadb'
                 });
             }
         }
-
-        // 3. Optional: Sync name/country to talent_profiles if missing?
-        // Let's at least update talent_profiles.tadb_id or similar if the column exists.
-        // For now, we'll stick to social_profiles as requested.
 
     } catch (e) {
         console.error(`      ❌ AudioDB Request failed: ${e.message}`);
@@ -111,15 +126,15 @@ async function main() {
 
     for (let i = 0; i < profiles.length; i++) {
         const row = profiles[i];
-        const mbid = row.social_id;
+        const mbidRaw = row.social_id || row.social_url;
         const talentId = row.talent_id;
         const artistName = row.talent_profiles?.name || 'Unknown Artist';
 
         console.log(`\n[${i + 1}/${profiles.length}] 🎵 Processing: ${artistName}`);
         
-        await enrichArtist(mbid, talentId, artistName);
+        await enrichArtist(mbidRaw, talentId, artistName);
 
-        // Respect TADB rate limits (2.5 requests per second for premium? Let's use 1s delay)
+        // Respect TADB rate limits (1s delay)
         await sleep(1000);
     }
 
