@@ -22,6 +22,18 @@ const TADB_SOCIAL_MAP = {
     'strIntLastFM': 'Last.fm',
 };
 
+// New mapping for the "extra" media fields we want to store in social_profiles metadata or columns
+const TADB_MEDIA_FIELDS = {
+    'strArtistLogo': 'logo',
+    'strArtistBanner': 'banner',
+    'strArtistFanart': 'fanart_1',
+    'strArtistFanart2': 'fanart_2',
+    'strArtistFanart3': 'fanart_3',
+    'strArtistFanart4': 'fanart_4',
+    'strArtistCutout': 'cutout',
+    'strArtistClearart': 'clearart'
+};
+
 /**
  * Extracts the UUID from a MusicBrainz URL or returns it if already an ID.
  */
@@ -80,7 +92,35 @@ async function enrichArtist(mbidRaw, talentId, artistName) {
         const artist = artists[0];
         console.log(`      ✨ Found AudioDB ID: ${artist.idArtist}`);
 
-        // 1. Create/Update AudioDB social profile
+        // 1. Update talent_profiles directly if bio/image is missing
+        const { data: currentTalent, error: fetchError } = await supabase
+            .from('talent_profiles')
+            .select('description, profile_image')
+            .eq('id', talentId)
+            .single();
+
+        if (!fetchError && currentTalent) {
+            const updateData = {};
+            if ((!currentTalent.description || currentTalent.description.trim() === '') && artist.strBiographyEN) {
+                updateData.description = artist.strBiographyEN;
+            }
+            if ((!currentTalent.profile_image || currentTalent.profile_image.trim() === '') && artist.strArtistThumb) {
+                updateData.profile_image = artist.strArtistThumb;
+            }
+
+            if (Object.keys(updateData).length > 0) {
+                updateData.updated_at = new Date().toISOString();
+                await supabase.from('talent_profiles').update(updateData).eq('id', talentId);
+                console.log(`      🔼 Syncing bio/image to talent_profiles main record.`);
+            }
+        }
+
+        // 2. Create/Update AudioDB social profile with RICH metadata
+        const metadata = {};
+        for (const [key, label] of Object.entries(TADB_MEDIA_FIELDS)) {
+            if (artist[key]) metadata[label] = artist[key];
+        }
+
         await upsertSocial({
             talent_id: talentId,
             social_type: 'AudioDB',
@@ -88,14 +128,14 @@ async function enrichArtist(mbidRaw, talentId, artistName) {
             social_url: `https://theaudiodb.com/artist/${artist.idArtist}`,
             social_about: artist.strBiographyEN,
             social_image: artist.strArtistThumb,
+            metadata: metadata, // Storing all the fanart/logos in metadata
             status: 'done'
         });
 
-        // 2. Extract and update other socials found in AudioDB
+        // 3. Extract and update other socials found in AudioDB
         for (const [tadbKey, hbType] of Object.entries(TADB_SOCIAL_MAP)) {
             const link = artist[tadbKey];
             if (link && link.trim() !== '' && link !== '0' && link !== '1') {
-                // AudioDB sometimes has just the handle or full URL
                 let fullUrl = link;
                 if (!link.startsWith('http')) {
                     if (hbType === 'Facebook') fullUrl = `https://www.facebook.com/${link}`;
