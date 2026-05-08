@@ -22,7 +22,7 @@ const TADB_SOCIAL_MAP = {
     'strIntLastFM': 'Last.fm',
 };
 
-// New mapping for the "extra" media fields we want to store in social_profiles metadata or columns
+// New mapping for the "extra" media fields we want to store in hb_socials metadata or columns
 const TADB_MEDIA_FIELDS = {
     'strArtistLogo': 'logo',
     'strArtistBanner': 'banner',
@@ -49,18 +49,18 @@ async function fetchMBIDS() {
     
     // Attempt to find MusicBrainz profiles where we haven't successfully pulled AudioDB info yet
     const { data, error } = await supabase
-        .from('social_profiles')
+        .from('hb_socials')
         .select(`
-            talent_id,
-            social_id,
+            linked_talent,
+            identifier,
             social_url,
-            talent_profiles!talent_id (
+            hb_talent!linked_talent (
                 id,
                 name
             )
         `)
-        .eq('social_type', 'MusicBrainz')
-        .not('social_id', 'is', null)
+        .eq('type', 'MusicBrainz')
+        .not('identifier', 'is', null)
         .limit(100); // Process in smaller batches
 
     if (error) {
@@ -92,26 +92,26 @@ async function enrichArtist(mbidRaw, talentId, artistName) {
         const artist = artists[0];
         console.log(`      ✨ Found AudioDB ID: ${artist.idArtist}`);
 
-        // 1. Update talent_profiles directly if bio/image is missing
+        // 1. Update hb_talent directly if bio/image is missing
         const { data: currentTalent, error: fetchError } = await supabase
-            .from('talent_profiles')
-            .select('description, profile_image')
+            .from('hb_talent')
+            .select('biography, image')
             .eq('id', talentId)
             .single();
 
         if (!fetchError && currentTalent) {
             const updateData = {};
-            if ((!currentTalent.description || currentTalent.description.trim() === '') && artist.strBiographyEN) {
-                updateData.description = artist.strBiographyEN;
+            if ((!currentTalent.biography || currentTalent.biography.trim() === '') && artist.strBiographyEN) {
+                updateData.biography = artist.strBiographyEN;
             }
-            if ((!currentTalent.profile_image || currentTalent.profile_image.trim() === '') && artist.strArtistThumb) {
-                updateData.profile_image = artist.strArtistThumb;
+            if ((!currentTalent.image || currentTalent.image.trim() === '') && artist.strArtistThumb) {
+                updateData.image = artist.strArtistThumb;
             }
 
             if (Object.keys(updateData).length > 0) {
                 updateData.updated_at = new Date().toISOString();
-                await supabase.from('talent_profiles').update(updateData).eq('id', talentId);
-                console.log(`      🔼 Syncing bio/image to talent_profiles main record.`);
+                await supabase.from('hb_talent').update(updateData).eq('id', talentId);
+                console.log(`      🔼 Syncing bio/image to hb_talent main record.`);
             }
         }
 
@@ -122,12 +122,12 @@ async function enrichArtist(mbidRaw, talentId, artistName) {
         }
 
         await upsertSocial({
-            talent_id: talentId,
-            social_type: 'AudioDB',
-            social_id: artist.idArtist,
+            linked_talent: talentId,
+            type: 'AudioDB',
+            identifier: artist.idArtist,
             social_url: `https://theaudiodb.com/artist/${artist.idArtist}`,
-            social_about: artist.strBiographyEN,
-            social_image: artist.strArtistThumb,
+            description: artist.strBiographyEN,
+            image: artist.strArtistThumb,
             metadata: metadata, // Storing all the fanart/logos in metadata
             status: 'done'
         });
@@ -145,8 +145,8 @@ async function enrichArtist(mbidRaw, talentId, artistName) {
                 }
 
                 await upsertSocial({
-                    talent_id: talentId,
-                    social_type: hbType,
+                    linked_talent: talentId,
+                    type: hbType,
                     social_url: fullUrl,
                     status: 'enriched_from_tadb'
                 });
@@ -166,9 +166,9 @@ async function main() {
 
     for (let i = 0; i < profiles.length; i++) {
         const row = profiles[i];
-        const mbidRaw = row.social_id || row.social_url;
-        const talentId = row.talent_id;
-        const artistName = row.talent_profiles?.name || 'Unknown Artist';
+        const mbidRaw = row.identifier || row.social_url;
+        const talentId = row.linked_talent;
+        const artistName = row.hb_talent?.name || 'Unknown Artist';
 
         console.log(`\n[${i + 1}/${profiles.length}] 🎵 Processing: ${artistName}`);
         
