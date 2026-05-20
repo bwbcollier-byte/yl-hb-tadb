@@ -59,7 +59,7 @@ async function fetchMBIDS() {
                 name
             )
         `)
-        .eq('type', 'MusicBrainz')
+        .eq('type', 'MUSICBRAINZ')
         .not('identifier', 'is', null)
         .limit(100); // Process in smaller batches
 
