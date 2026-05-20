@@ -123,12 +123,12 @@ async function enrichArtist(mbidRaw, talentId, artistName) {
 
         await upsertSocial({
             linked_talent: talentId,
-            type: 'AudioDB',
+            type: 'AUDIODB',
             identifier: artist.idArtist,
             social_url: `https://theaudiodb.com/artist/${artist.idArtist}`,
             description: artist.strBiographyEN,
             image: artist.strArtistThumb,
-            metadata: metadata, // Storing all the fanart/logos in metadata
+            gallery_images: metadata, // images stored in gallery_images (was metadata before schema refactor)
             status: 'done'
         });
 
